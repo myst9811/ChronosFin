@@ -114,6 +114,23 @@ model Insight {
   @@map("insights")
 }
 
+model AuditLog {
+  id           String            @id @default(uuid())
+  actorType    AuditActorType
+  actorId      String?
+  actorEmail   String?
+  action       AuditAction
+  resourceType AuditResourceType
+  resourceId   String?
+  targetUserId String?
+  metadata     Json?
+  createdAt    DateTime          @default(now())
+
+  @@index([targetUserId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
 enum AccountType {
   CHECKING
   SAVINGS
@@ -165,4 +182,32 @@ enum Priority {
   MEDIUM
   HIGH
   URGENT
+}
+
+enum AuditActorType {
+  USER
+  ADMIN
+  SYSTEM
+}
+
+enum AuditAction {
+  ACCOUNT_CREATED
+  ACCOUNT_UPDATED
+  ACCOUNT_DEACTIVATED
+  TRANSACTION_CREATED
+  TRANSACTION_UPDATED
+  TRANSACTION_DELETED
+  GOAL_CREATED
+  GOAL_UPDATED
+  GOAL_CONTRIBUTION_ADDED
+  GOAL_DEACTIVATED
+  ADMIN_USER_STATUS_UPDATED
+  ACCOUNT_NUMBER_ENCRYPTED
+}
+
+enum AuditResourceType {
+  ACCOUNT
+  TRANSACTION
+  GOAL
+  USER
 }
