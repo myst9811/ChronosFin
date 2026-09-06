@@ -8,7 +8,8 @@ import {
 import { validateGoalInput, validateGoalUpdate } from '../utils/validation';
 import { ApiError } from '../utils/ApiError';
 import { buildPaginationMeta, parsePagination } from '../utils/pagination';
-import { incrementGoalAmount } from '../services/goal.service';
+import { AuditAction, AuditResourceType } from '../generated/prisma';
+import { recordUserAuditEvent } from '../services/audit.service';
 
 // Helper function to calculate goal progress metrics
 const calculateGoalMetrics = (goal: any) => {
@@ -45,17 +46,28 @@ export const createGoal = async (
     throw new ApiError(400, validation.error!);
   }
 
-  // Create goal
-  const goal = await prisma.goal.create({
-    data: {
-      userId: req.user.userId,
-      title: title.trim(),
-      description: description?.trim(),
-      targetAmount,
-      currentAmount: currentAmount || 0,
-      targetDate: new Date(targetDate),
-      category,
-    },
+  const goal = await prisma.$transaction(async (tx) => {
+    const createdGoal = await tx.goal.create({
+      data: {
+        userId: req.user!.userId,
+        title: title.trim(),
+        description: description?.trim(),
+        targetAmount,
+        currentAmount: currentAmount || 0,
+        targetDate: new Date(targetDate),
+        category,
+      },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.GOAL_CREATED,
+      resourceType: AuditResourceType.GOAL,
+      resourceId: createdGoal.id,
+      metadata: { category: createdGoal.category },
+    });
+
+    return createdGoal;
   });
 
   const goalWithMetrics = calculateGoalMetrics(goal);
@@ -168,17 +180,37 @@ export const updateGoal = async (
     throw new ApiError(404, 'Goal not found');
   }
 
-  // Update goal
-  const goal = await prisma.goal.update({
-    where: { id },
-    data: {
-      ...(title && { title: title.trim() }),
-      ...(description !== undefined && { description: description?.trim() || null }),
-      ...(targetAmount !== undefined && { targetAmount }),
-      ...(currentAmount !== undefined && { currentAmount }),
-      ...(targetDate && { targetDate: new Date(targetDate) }),
-      ...(isActive !== undefined && { isActive }),
-    },
+  const changedFields = [
+    ...(title !== undefined ? ['title'] : []),
+    ...(description !== undefined ? ['description'] : []),
+    ...(targetAmount !== undefined ? ['targetAmount'] : []),
+    ...(currentAmount !== undefined ? ['currentAmount'] : []),
+    ...(targetDate !== undefined ? ['targetDate'] : []),
+    ...(isActive !== undefined ? ['isActive'] : []),
+  ];
+
+  const goal = await prisma.$transaction(async (tx) => {
+    const updatedGoal = await tx.goal.update({
+      where: { id },
+      data: {
+        ...(title && { title: title.trim() }),
+        ...(description !== undefined && { description: description?.trim() || null }),
+        ...(targetAmount !== undefined && { targetAmount }),
+        ...(currentAmount !== undefined && { currentAmount }),
+        ...(targetDate && { targetDate: new Date(targetDate) }),
+        ...(isActive !== undefined && { isActive }),
+      },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.GOAL_UPDATED,
+      resourceType: AuditResourceType.GOAL,
+      resourceId: updatedGoal.id,
+      metadata: { changedFields },
+    });
+
+    return updatedGoal;
   });
 
   const goalWithMetrics = calculateGoalMetrics(goal);
@@ -202,21 +234,31 @@ export const addContribution = async (
     throw new ApiError(400, 'Amount must be a positive number');
   }
 
-  // Check if goal exists and belongs to user
-  const existingGoal = await prisma.goal.findFirst({
-    where: {
-      id,
-      userId: req.user.userId,
-    },
+  // The goal update and its audit event share one transaction. Prisma's
+  // increment still avoids lost updates when concurrent contributions arrive.
+  const goal = await prisma.$transaction(async (tx) => {
+    const existingGoal = await tx.goal.findFirst({
+      where: { id, userId: req.user!.userId },
+    });
+
+    if (!existingGoal) {
+      throw new ApiError(404, 'Goal not found');
+    }
+
+    const updatedGoal = await tx.goal.update({
+      where: { id },
+      data: { currentAmount: { increment: amount } },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.GOAL_CONTRIBUTION_ADDED,
+      resourceType: AuditResourceType.GOAL,
+      resourceId: updatedGoal.id,
+    });
+
+    return updatedGoal;
   });
-
-  if (!existingGoal) {
-    throw new ApiError(404, 'Goal not found');
-  }
-
-  // Add to current amount atomically (avoids a lost update if two
-  // contributions to the same goal happen concurrently)
-  const goal = await incrementGoalAmount(id, amount);
 
   const goalWithMetrics = calculateGoalMetrics(goal);
 
@@ -249,10 +291,19 @@ export const deleteGoal = async (
     throw new ApiError(404, 'Goal not found');
   }
 
-  // Soft delete by setting isActive to false
-  await prisma.goal.update({
-    where: { id },
-    data: { isActive: false },
+  // Soft delete by setting isActive to false.
+  await prisma.$transaction(async (tx) => {
+    await tx.goal.update({
+      where: { id },
+      data: { isActive: false },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.GOAL_DEACTIVATED,
+      resourceType: AuditResourceType.GOAL,
+      resourceId: id,
+    });
   });
 
   res.status(200).json({ message: 'Goal deactivated successfully' });

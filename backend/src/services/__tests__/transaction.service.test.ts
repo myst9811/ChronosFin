@@ -39,6 +39,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await prisma.auditLog.deleteMany({ where: { targetUserId: userId } });
   await prisma.transaction.deleteMany({ where: { userId } });
   await prisma.account.deleteMany({ where: { userId } });
   await prisma.user.delete({ where: { id: userId } });

@@ -3,6 +3,8 @@ import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { parsePagination, buildPaginationMeta } from '../../utils/pagination';
 import { AdminRequest } from '../../types/admin.types';
+import { AuditAction, AuditResourceType } from '../../generated/prisma';
+import { recordAdminAuditEvent } from '../../services/audit.service';
 
 const USER_LIST_SELECT = {
   id: true,
@@ -44,22 +46,39 @@ export const updateUserStatus = async (req: AdminRequest, res: Response): Promis
     throw new ApiError(400, 'isActive must be a boolean value');
   }
 
-  const existing = await prisma.user.findUnique({ where: { id } });
-  if (!existing) {
-    throw new ApiError(404, 'User not found');
+  if (!req.admin) {
+    throw new ApiError(401, 'Not authenticated');
   }
 
-  const user = await prisma.user.update({
-    where: { id },
-    data: { isActive },
-    select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      createdAt: true,
-      isActive: true,
-    },
+  const user = await prisma.$transaction(async (tx) => {
+    const existing = await tx.user.findUnique({ where: { id } });
+    if (!existing) {
+      throw new ApiError(404, 'User not found');
+    }
+
+    const updatedUser = await tx.user.update({
+      where: { id },
+      data: { isActive },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        createdAt: true,
+        isActive: true,
+      },
+    });
+
+    await recordAdminAuditEvent(tx, {
+      adminEmail: req.admin!.email,
+      targetUserId: updatedUser.id,
+      action: AuditAction.ADMIN_USER_STATUS_UPDATED,
+      resourceType: AuditResourceType.USER,
+      resourceId: updatedUser.id,
+      metadata: { previousIsActive: existing.isActive, isActive },
+    });
+
+    return updatedUser;
   });
 
   res.status(200).json({ user });

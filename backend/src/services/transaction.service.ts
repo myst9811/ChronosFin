@@ -1,7 +1,8 @@
 import { prisma } from '../lib/prisma';
 import { ApiError } from '../utils/ApiError';
-import { TransactionCategory, TransactionType } from '../generated/prisma';
+import { AuditAction, AuditResourceType, TransactionCategory, TransactionType } from '../generated/prisma';
 import type { PaginationParams } from '../utils/pagination';
+import { recordUserAuditEvent } from './audit.service';
 
 const ACCOUNT_SUMMARY_SELECT = {
   name: true,
@@ -118,6 +119,14 @@ export async function createTransactionForUser(userId: string, input: CreateTran
       });
     }
 
+    await recordUserAuditEvent(tx, {
+      userId,
+      action: AuditAction.TRANSACTION_CREATED,
+      resourceType: AuditResourceType.TRANSACTION,
+      resourceId: transaction.id,
+      metadata: { type: transaction.type },
+    });
+
     return transaction;
   });
 }
@@ -230,7 +239,7 @@ export async function updateTransactionForUser(userId: string, id: string, input
       }
     }
 
-    return tx.transaction.update({
+    const transaction = await tx.transaction.update({
       where: { id },
       data: {
         ...(input.amount !== undefined && { amount: input.amount }),
@@ -241,6 +250,16 @@ export async function updateTransactionForUser(userId: string, id: string, input
       },
       include: TRANSACTION_INCLUDE,
     });
+
+    await recordUserAuditEvent(tx, {
+      userId,
+      action: AuditAction.TRANSACTION_UPDATED,
+      resourceType: AuditResourceType.TRANSACTION,
+      resourceId: transaction.id,
+      metadata: { changedFields: Object.keys(input) },
+    });
+
+    return transaction;
   });
 }
 
@@ -273,6 +292,14 @@ export async function deleteTransactionForUser(userId: string, id: string) {
         data: { balance: { decrement: existing.amount } },
       });
     }
+
+    await recordUserAuditEvent(tx, {
+      userId,
+      action: AuditAction.TRANSACTION_DELETED,
+      resourceType: AuditResourceType.TRANSACTION,
+      resourceId: existing.id,
+      metadata: { type: existing.type },
+    });
 
     await tx.transaction.delete({ where: { id } });
   });

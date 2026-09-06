@@ -32,6 +32,7 @@ async function createTestUser(overrides: { email?: string; isActive?: boolean } 
 
 afterEach(async () => {
   if (testUserIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { targetUserId: { in: testUserIds } } });
     await prisma.user.deleteMany({ where: { id: { in: testUserIds } } });
     testUserIds.length = 0;
   }
@@ -115,6 +116,7 @@ describe('updateUserStatus', () => {
     const deactivateReq = {
       params: { id: user.id },
       body: { isActive: false },
+      admin: { email: 'operator@example.com' },
     } as unknown as AdminRequest;
     const deactivateRes = createMockRes();
 
@@ -130,6 +132,7 @@ describe('updateUserStatus', () => {
     const reactivateReq = {
       params: { id: user.id },
       body: { isActive: true },
+      admin: { email: 'operator@example.com' },
     } as unknown as AdminRequest;
     const reactivateRes = createMockRes();
 
@@ -138,6 +141,17 @@ describe('updateUserStatus', () => {
     const dbUserAfterReactivate = await prisma.user.findUnique({ where: { id: user.id } });
     expect(dbUserAfterReactivate?.isActive).toBe(true);
     expect((reactivateRes.json as any).mock.calls[0][0].user.isActive).toBe(true);
+
+    const auditEntries = await prisma.auditLog.findMany({
+      where: { targetUserId: user.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(auditEntries).toHaveLength(2);
+    expect(auditEntries[0]).toMatchObject({
+      actorEmail: 'operator@example.com',
+      action: 'ADMIN_USER_STATUS_UPDATED',
+      metadata: { previousIsActive: true, isActive: false },
+    });
   });
 
   it('rejects a non-boolean isActive with 400', async () => {
@@ -156,6 +170,7 @@ describe('updateUserStatus', () => {
     const req = {
       params: { id: 'not-a-real-id' },
       body: { isActive: false },
+      admin: { email: 'operator@example.com' },
     } as unknown as AdminRequest;
     const res = createMockRes();
 
@@ -167,7 +182,11 @@ describe('updateUserStatus', () => {
     const user = await createTestUser({ email, isActive: true });
 
     await updateUserStatus(
-      { params: { id: user.id }, body: { isActive: false } } as unknown as AdminRequest,
+      {
+        params: { id: user.id },
+        body: { isActive: false },
+        admin: { email: 'operator@example.com' },
+      } as unknown as AdminRequest,
       createMockRes()
     );
 
