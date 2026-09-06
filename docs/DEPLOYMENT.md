@@ -54,6 +54,29 @@ Neon, provisioned via Vercel's Marketplace integration (`vercel integration add 
 
 Locally these are identical (same docker-compose instance) — this distinction only matters against real Neon. The Neon database itself was not renamed as part of the FinanceFlow → ChronosFin rename (project ID `neon-citron-lantern`, internal `neondb` database name) — only the app-facing names changed; there was no reason to touch the already-provisioned database.
 
+### Security-hardening release checklist (issue #27)
+
+Complete these environment and Neon-console steps with deployment access; they cannot be safely performed from source control:
+
+1. Generate a fresh account-number key with `openssl rand -base64 32` and set it as `ACCOUNT_NUMBER_ENCRYPTION_KEY` for every backend environment. Do not reuse `JWT_SECRET`, put it in source control, or print it in command output. During a key rotation, set the old key in `ACCOUNT_NUMBER_ENCRYPTION_PREVIOUS_KEYS`, deploy, run the rotation command below, then remove the old key and deploy again.
+2. Confirm both production Neon URLs include `sslmode=require`. The backend now refuses to start with a non-local URL that does not explicitly require TLS. `DATABASE_URL` stays pooled for runtime traffic; `DIRECT_URL` stays unpooled and is reserved for migrations.
+3. Apply `prisma migrate deploy` through a schema/migration role, deploy the backend with its runtime role, then run `npm run data:encrypt-account-numbers` in an environment that has the primary key and the production database URLs. The command writes only a row count, encrypts legacy plaintext rows in batches, and records `SYSTEM` audit events. Use `npm run data:encrypt-account-numbers -- --rotate` after staging a new primary key; it re-encrypts values that are not already decryptable by that primary key.
+4. In Neon, use separate credentials for migrations and the deployed API. The runtime role needs normal CRUD on the application tables but no schema-owner privileges. It needs `INSERT` plus column-level `SELECT` on the generated audit ID (Prisma uses `INSERT ... RETURNING`), but no broad audit reads, `UPDATE`, or `DELETE`. A migration role owns schema changes and can be used for a separate audited/read-only support role as needed. Example grants (replace role names and review after each schema change):
+
+```sql
+GRANT CONNECT ON DATABASE neondb TO chronosfin_app;
+GRANT USAGE ON SCHEMA public TO chronosfin_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+  users, accounts, transactions, goals, insights TO chronosfin_app;
+REVOKE ALL ON TABLE audit_logs FROM chronosfin_app;
+GRANT INSERT ON TABLE audit_logs TO chronosfin_app;
+GRANT SELECT (id) ON TABLE audit_logs TO chronosfin_app;
+```
+
+5. In the Neon console, record the enabled backup/PITR retention period and an owner for restore tests. Create and validate a branch/restore procedure before relying on it, then review the retention and successful restore evidence at least annually. This is a deployment-account control, not something the application can infer from a connection string.
+
+The listed SQL is a grant template, not an instruction to run it unchanged: validate the database/role names and Neon role-management workflow first. The migration role must remain separate from the runtime `chronosfin_app` role.
+
 ## Environment variables
 
 Backend project (`chronosfin-api`) — all set, values never displayed during setup (piped directly from source to `vercel env add` without echoing):
@@ -66,6 +89,8 @@ Backend project (`chronosfin-api`) — all set, values never displayed during se
 | `JWT_EXPIRES_IN` | `7d` |
 | `CORS_ORIGIN` | `https://chronosfin-web.vercel.app,https://chronosfin.shannensaikia.in` |
 | `SENTRY_DSN` | Not set — observability's Sentry integration remains opt-in/inactive until a Sentry project is created |
+| `ACCOUNT_NUMBER_ENCRYPTION_KEY` | Fresh base64-encoded 32-byte secret, unique per environment |
+| `ACCOUNT_NUMBER_ENCRYPTION_PREVIOUS_KEYS` | Unset normally; temporary comma-separated prior key ring during rotation |
 
 `server.ts`'s CORS config also allows any `*.vercel.app` origin automatically, so preview deployments (one per PR/branch, unpredictable subdomains) work without needing `CORS_ORIGIN` updated per-PR.
 

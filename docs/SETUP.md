@@ -19,7 +19,7 @@ cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
 ```
 
-Edit `backend/.env` and set `JWT_SECRET` to a real secret, e.g. `openssl rand -base64 32`.
+Edit `backend/.env` and set `JWT_SECRET` plus `ACCOUNT_NUMBER_ENCRYPTION_KEY` to distinct real secrets, e.g. `openssl rand -base64 32` for each.
 The default `DATABASE_URL` matches the Postgres container started in step 3.
 
 ## 3. Start the database
