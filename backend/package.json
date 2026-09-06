@@ -10,6 +10,7 @@
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "data:encrypt-account-numbers": "ts-node src/scripts/encrypt-existing-account-numbers.ts",
     "test": "vitest run"
   },
   "keywords": [],

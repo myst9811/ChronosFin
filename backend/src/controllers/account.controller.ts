@@ -7,6 +7,16 @@ import {
 } from '../types/account.types';
 import { validateAccountInput, validateAccountUpdate } from '../utils/validation';
 import { ApiError } from '../utils/ApiError';
+import { AuditAction, AuditResourceType, Account } from '../generated/prisma';
+import { decryptAccountNumber, encryptAccountNumber } from '../utils/accountNumberEncryption';
+import { recordUserAuditEvent } from '../services/audit.service';
+
+function serializeAccount(account: Account) {
+  return {
+    ...account,
+    accountNumber: decryptAccountNumber(account.accountNumber),
+  };
+}
 
 // Create a new account
 export const createAccount = async (
@@ -25,20 +35,32 @@ export const createAccount = async (
     throw new ApiError(400, validation.error!);
   }
 
-  // Create account
-  const account = await prisma.account.create({
-    data: {
-      userId: req.user.userId,
-      name: name.trim(),
-      type,
-      balance: balance || 0,
-      currency: currency || 'INR',
-      bankName: bankName?.trim(),
-      accountNumber: accountNumber?.trim(),
-    },
+  const normalizedAccountNumber = accountNumber?.trim();
+  const account = await prisma.$transaction(async (tx) => {
+    const createdAccount = await tx.account.create({
+      data: {
+        userId: req.user!.userId,
+        name: name.trim(),
+        type,
+        balance: balance || 0,
+        currency: currency || 'INR',
+        bankName: bankName?.trim(),
+        accountNumber: normalizedAccountNumber ? encryptAccountNumber(normalizedAccountNumber) : null,
+      },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.ACCOUNT_CREATED,
+      resourceType: AuditResourceType.ACCOUNT,
+      resourceId: createdAccount.id,
+      metadata: { type: createdAccount.type },
+    });
+
+    return createdAccount;
   });
 
-  res.status(201).json({ account });
+  res.status(201).json({ account: serializeAccount(account) });
 };
 
 // Get all accounts for the authenticated user
@@ -62,7 +84,7 @@ export const getAccounts = async (
     },
   });
 
-  res.status(200).json({ accounts, count: accounts.length });
+  res.status(200).json({ accounts: accounts.map(serializeAccount), count: accounts.length });
 };
 
 // Get a single account by ID
@@ -87,7 +109,7 @@ export const getAccountById = async (
     throw new ApiError(404, 'Account not found');
   }
 
-  res.status(200).json({ account });
+  res.status(200).json({ account: serializeAccount(account) });
 };
 
 // Update an account
@@ -120,19 +142,41 @@ export const updateAccount = async (
     throw new ApiError(404, 'Account not found');
   }
 
-  // Update account
-  const account = await prisma.account.update({
-    where: { id },
-    data: {
-      ...(name && { name: name.trim() }),
-      ...(balance !== undefined && { balance }),
-      ...(isActive !== undefined && { isActive }),
-      ...(bankName !== undefined && { bankName: bankName?.trim() || null }),
-      ...(accountNumber !== undefined && { accountNumber: accountNumber?.trim() || null }),
-    },
+  const normalizedAccountNumber = accountNumber?.trim() || null;
+  const changedFields = [
+    ...(name !== undefined ? ['name'] : []),
+    ...(balance !== undefined ? ['balance'] : []),
+    ...(isActive !== undefined ? ['isActive'] : []),
+    ...(bankName !== undefined ? ['bankName'] : []),
+    ...(accountNumber !== undefined ? ['accountNumber'] : []),
+  ];
+
+  const account = await prisma.$transaction(async (tx) => {
+    const updatedAccount = await tx.account.update({
+      where: { id },
+      data: {
+        ...(name && { name: name.trim() }),
+        ...(balance !== undefined && { balance }),
+        ...(isActive !== undefined && { isActive }),
+        ...(bankName !== undefined && { bankName: bankName?.trim() || null }),
+        ...(accountNumber !== undefined && {
+          accountNumber: normalizedAccountNumber ? encryptAccountNumber(normalizedAccountNumber) : null,
+        }),
+      },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.ACCOUNT_UPDATED,
+      resourceType: AuditResourceType.ACCOUNT,
+      resourceId: updatedAccount.id,
+      metadata: { changedFields },
+    });
+
+    return updatedAccount;
   });
 
-  res.status(200).json({ account });
+  res.status(200).json({ account: serializeAccount(account) });
 };
 
 // Delete an account
@@ -158,11 +202,21 @@ export const deleteAccount = async (
     throw new ApiError(404, 'Account not found');
   }
 
-  // Soft delete by setting isActive to false instead of hard delete
-  // This preserves transaction history
-  await prisma.account.update({
-    where: { id },
-    data: { isActive: false },
+  // Soft delete by setting isActive to false instead of hard delete.
+  // The audit event is committed with the update so the deactivation cannot
+  // succeed without its record.
+  await prisma.$transaction(async (tx) => {
+    await tx.account.update({
+      where: { id },
+      data: { isActive: false },
+    });
+
+    await recordUserAuditEvent(tx, {
+      userId: req.user!.userId,
+      action: AuditAction.ACCOUNT_DEACTIVATED,
+      resourceType: AuditResourceType.ACCOUNT,
+      resourceId: id,
+    });
   });
 
   res.status(200).json({ message: 'Account deactivated successfully' });
