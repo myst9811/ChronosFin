@@ -8,6 +8,8 @@ import { formatCurrency } from '../utils/formatters';
 
 const Accounts = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [inactiveAccounts, setInactiveAccounts] = useState<Account[]>([]);
+  const [showInactive, setShowInactive] = useState(false);
   const [summary, setSummary] = useState<AccountSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
@@ -15,11 +17,13 @@ const Accounts = () => {
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = async () => {
-    const [accountsData, summaryData] = await Promise.all([
+    const [accountsData, inactiveData, summaryData] = await Promise.all([
       accountService.getAccounts(),
+      accountService.getAccounts(false),
       accountService.getAccountSummary(),
     ]);
     setAccounts(accountsData);
+    setInactiveAccounts(inactiveData);
     setSummary(summaryData);
   };
 
@@ -37,11 +41,21 @@ const Accounts = () => {
     setFormMode('edit');
   };
 
-  const handleDelete = async (account: Account) => {
-    if (!window.confirm(`Deactivate "${account.name}"? This can't be undone from the UI.`)) {
+  const handleDeactivate = async (account: Account) => {
+    if (
+      !window.confirm(
+        `Deactivate "${account.name}"? It will be hidden from your accounts and totals, ` +
+          'but its transaction history is kept. You can restore it later from "Inactive accounts".'
+      )
+    ) {
       return;
     }
     await accountService.deleteAccount(account.id);
+    await loadData();
+  };
+
+  const handleRestore = async (account: Account) => {
+    await accountService.updateAccount(account.id, { isActive: true });
     await loadData();
   };
 
@@ -95,17 +109,37 @@ const Accounts = () => {
 
       <div className="space-y-4">
         {accounts.length === 0 && (
-          <p className="text-ink-muted">No accounts yet. Add one to get started.</p>
+          <p className="text-ink-muted">
+            {inactiveAccounts.length > 0
+              ? 'No active accounts. Add one or restore an inactive account below.'
+              : 'No accounts yet. Add one to get started.'}
+          </p>
         )}
         {accounts.map((account) => (
           <AccountCard
             key={account.id}
             account={account}
             onEdit={handleEdit}
-            onDelete={handleDelete}
+            onDeactivate={handleDeactivate}
           />
         ))}
       </div>
+
+      {inactiveAccounts.length > 0 && (
+        <div className="space-y-4">
+          <button
+            onClick={() => setShowInactive((v) => !v)}
+            className="text-sm font-medium text-ink-muted transition-colors hover:text-ink"
+            aria-expanded={showInactive}
+          >
+            {showInactive ? 'Hide' : 'Show'} inactive accounts ({inactiveAccounts.length})
+          </button>
+          {showInactive &&
+            inactiveAccounts.map((account) => (
+              <AccountCard key={account.id} account={account} onRestore={handleRestore} />
+            ))}
+        </div>
+      )}
     </div>
   );
 };
